@@ -1,0 +1,353 @@
+#!/bin/bash
+
+MAIN_INCLUDED="${0}"
+
+set +o posix
+shopt -s expand_aliases
+
+alias exec_chroot='chroot "${_rootfs}" /toolchain/bin/env PATH=/bin:/usr/bin:/sbin:/usr/sbin:/toolchain/bin /toolchain/bin/bash --login +h'
+
+strip_charset()
+{
+	local CHARSET="${1}"
+	shift
+	local STRING="${@}"
+	
+	echo "${STRING}" | tr -s "${CHARSET}"
+	
+	return 0
+}
+
+only_lower()
+{
+	echo ${@} | tr [[:upper:]] [[:lower:]]
+	return ${PIPESTATUS[0]}	
+}
+
+only_upper()
+{
+	echo ${@} | tr [[:lower:]] [[:upper:]]
+	return ${PIPESTATUS[0]}
+}
+
+only_as_root()
+{
+	if [ "$(id -un)" != "root" ]
+	then
+		printme -f "die" msg_only_as "root"
+	fi
+}
+
+only_as_user()
+{
+	if [ "$(id -un)" != "${MYUSER}" ]
+	then
+		printme -f "die" msg_only_as "${MYUSER}"
+	fi
+}
+
+full_path()
+{
+	[ -z "${1}" ] && return 1
+	
+	readlink -f ${1}
+	return 0
+}
+
+get_command()
+{
+	local QUIET
+	
+	case "${1}" in 
+		-q ) 
+			QUIET='&>/dev/null' 
+			shift 1
+		;;
+	esac
+	
+	eval command -v ${1} ${QUIET}
+	
+	return $?
+}
+
+get_user_name()
+{
+	local QUIET
+	
+	if [ "${1}" == "-q" ]
+	then
+		QUIET='&>/dev/null'
+		shift 1
+	fi
+	
+	eval getent passwd "${1}" ${QUIET} | cut -d ':' -f 1
+	return ${PIPESTATUS[0]}
+}
+
+get_user_group()
+{
+	local QUIET
+	
+	if [ "${1}" == "-q" ]
+	then
+		QUIET='&>/dev/null'
+		shift 1
+	fi
+	
+	eval getent group "${1}" ${QUIET} | cut -d ':' -f 1
+	return ${PIPESTATUS[0]}
+}
+
+get_user_home()
+{
+	if [ "${1}" == "-q" ]
+	then
+		QUIET='&>/dev/null'
+		shift 1
+	fi
+	
+	eval getent passwd "${1}" ${QUIET} | cut -d ':' -f 6
+	return ${PIPESTATUS[0]}
+}
+
+get_host_arch()
+{
+	uname -m
+	return $?
+}
+
+get_long_bit()
+{
+	getconf LONG_BIT
+	return $?
+}
+
+define_paths()
+{
+	B_SCRIPTS="${BUILD_SCRIPTS:-${MYHOME}/scripts}"
+	B_SOURCES="${BUILD_SOURCES:-${MYHOME}/sources}"
+	B_PATCHES="${BUILD_PATCHES:-${MYHOME}/patches}"
+	B_TMPDIR="${BUILD_TMP:-${MYHOME}/tmp}"
+	B_LOGDIR="${BUILD_LOG:-${MYHOME}/log}"
+	B_ROOTFS="${BUILD_ROOTFS:-${MYHOME}/rootfs}"
+	B_FILES="${BUILD_FILES:-${MYHOME}/files}"
+	B_STAGE="${MYHOME}/stage"
+	B_TOOLSPATH="/toolchain"
+	
+	# Export macros
+	readonly _rootfs="${B_ROOTFS}"
+	readonly _filespath="${B_FILES}"
+	readonly _toolspath="${B_TOOLSPATH}"
+	readonly _sourcedir="${B_SOURCES}"
+	readonly _patchdir="${B_PATCHES}"
+	readonly _tmpdir="${B_TMPDIR}"
+	readonly _logdir="${B_LOGDIR}"
+	readonly _stagedir="${B_STAGE}"
+	readonly _bits="$(get_long_bit)"
+	
+	return 0
+}
+
+define_compiler()
+{
+	# Transitory multilib force disable
+	B_MULTILIB="0"
+	
+	B_DISTRO="${BUILD_DISTRO:-vacteria}"
+	B_UNAME="$(uname -m)"
+	B_CTARGET="${B_UNAME}-${B_DISTRO}-linux-gnu"
+	B_LIBDIR="/lib"
+	B_TOOLSLIB="${B_TOOLSPATH}${B_LIBDIR}"
+	
+	# Export macros
+	readonly _multilib="${B_MULTILIB}"
+	readonly _ctarget="${B_CTARGET}"
+	readonly _libdir="${B_LIBDIR}"
+	readonly _toolslib="${B_TOOLSLIB}"
+	readonly _toolsinclude="${B_TOOLSPATH}/include"
+	readonly _toolsbin="${B_TOOLSPATH}/bin"
+	readonly _uname="${B_UNAME}"
+	readonly _distro="${B_DISTRO}"
+
+	return 0
+}
+
+check_scripts()
+{
+	local I S B F	
+	
+	_success_scripts_=""
+	_failed_scripts=""
+	_missing_scripts=""
+
+	S="0"
+	
+	for I in ${@}
+	do
+		B="${I##*/}"
+		F="${B%.sh}"
+		I="${F}.sh"
+		
+		reset_script
+		
+		if [ -f "${B_SCRIPTS}/${I}" ]
+		then
+			if ! . ${B_SCRIPTS}/${I}
+			then
+				_failed_scripts_+=" ${I}"
+				S="1"
+				continue
+			fi
+			
+			if get_command -q pkg_hook
+			then
+				_success_scripts_+=" ${I}"
+				continue
+			fi
+			
+			if get_command -q pkg_compile
+			then
+				if [[ -z "${name}" || -z "${version}" || -z "${sources}" ]]
+				then
+					_failed_scripts_+=" ${I}"
+					S="1"
+					continue
+				fi
+				_success_scripts_+=" ${I}"
+			fi
+		else
+			_missing_scripts_+=" ${I}"
+			S="1"
+		fi
+	done
+	
+	return ${S}
+}
+
+reset_script()
+{
+	unset name
+	unset version
+	unset sources
+	unset patches
+	unset exclusive
+	unset exclude
+	unset pkg_pre_compile
+	unset pkg_post_compile
+	unset pkg_compile
+	unset pkg_hook
+	unset _mainsrc
+	unset _lastsrc
+	unset _wrkdir
+	unset _opts
+	unset opts
+	
+	return 0
+}
+
+source_script()
+{
+	INPUT="${1##*/}"
+	
+	reset_script
+	source ${B_SCRIPTS}/${INPUT} || return 1
+	return 0
+}
+
+get_script_list()
+{	
+
+	find ${B_SCRIPTS}/ -maxdepth 1 -mindepth 1 -type f -name "*.sh" 2>/dev/null | sort -n
+	
+	return $?
+}
+
+clean_tmpdir()
+{
+	case "X$(strip_charset "/" "${B_TMPDIR}")" in
+		X | X/ | X/tmp ) return 1 ;;
+		X?* )
+			printme -f "msg" msg_cleanning_dir "${B_TMPDIR}"
+			find ${B_TMPDIR} -maxdepth 1 -mindepth 1 -type d -exec rm -rf {} \;
+			return $?
+		;;
+	esac
+	
+	return 0
+}
+
+clean_logdir()
+{
+	case "X$(strip_charset "/" "${B_LOGDIR}")" in
+		X | X/ | X/log ) return 1 ;;
+		X?* )
+			printme -f "msg" msg_cleanning_dir "${B_LOGDIR}"
+			find ${B_LOGDIR} -type f -exec rm -f {} \;
+			return $?
+		;;
+	esac
+	
+	return 0
+}
+
+clean_toolspath()
+{
+	if [ -d "${B_ROOTFS}/${B_TOOLSPATH}" ]
+	then
+		printme -f "msg" msg_cleanning_dir "${B_ROOTFS}/${B_TOOLSPATH}"
+		find ${B_ROOTFS}/${B_TOOLSPATH} -mindepth 1 -exec rm -rf {} \; 2>/dev/null
+		return $?
+	fi
+	
+	return 0
+}
+
+clean_build()
+{
+	clean_tmpdir
+	clean_logdir
+	clean_toolspath
+	
+	return 0
+}
+
+mpoint()
+{
+	#
+	# Return codes
+	#
+	# 0 = Directory is a mountpoint
+	# 1 = Directory is NOT mountpoint or /proc/mounts not found
+	#
+	
+	local LINE FIELDS MODE DIR
+	
+	case ${1} in
+		-s | --silent ) MODE="silent" ; shift ;;
+	esac	
+	DIR="${1}"
+
+	[[ -f /proc/mounts || -x "${DIR}" || -d "${DIR}" ]] || return 1
+
+	while read LINE
+	do
+		if [ "$(echo ${LINE} | awk '{print $2}')" == "${DIR}" ]
+		then
+			if [ "${MODE}" == "silent" ]
+			then
+				return 0
+			else
+				msg "$(gettext '%s is a mountpoint')" "${DIR}"
+				return 0
+			fi
+		fi
+	done < /proc/mounts
+
+	if [ "${MODE}" == "silent" ]
+	then
+		return 1
+	else
+		msg "$(gettext '%s is NOT a mountpoint')" "${DIR}"
+		return 1
+	fi	
+}

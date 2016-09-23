@@ -1,0 +1,121 @@
+#!/bin/bash
+
+MESSAGES_INCLUDED="${0}"
+
+if builtin command -v gettext >/dev/null
+then
+	alias gettext='gettext -e'
+else
+	alias gettext='printf %s'
+fi
+
+DEBUG="$(gettext 'DEBUG : ')"
+ERROR="$(gettext 'ERROR : ')"
+WARN="$(gettext 'WARN  : ')"
+LOG="$(gettext 'LOG   ; ')"
+
+msg()
+{
+	local MSG="${1}"
+	shift 
+	
+	printf "${MSG}\n" ${@}
+	return 0
+}
+
+debug()
+{
+	local MSG="${1}"
+	shift 
+	
+	printf "${DEBUG}${MSG}\n" ${@}
+	return 0
+}
+
+error()
+{
+	local MSG="${1}"
+	shift
+	
+	printf "${ERROR}${MSG}\n" "${@}"
+	return 0
+}
+
+die()
+{
+	local MSG="${1}"
+	shift
+	
+	printf "${ERROR}${MSG}\n" "${@}"
+	
+	exit 1
+}
+
+warn()
+{
+	local MSG="${1}"
+	shift
+		
+	printf "${WARN}${MSG}\n" ${@}
+	return 0
+}
+
+log()
+{
+	local MSG="${1}"
+	shift
+		
+	printf "${LOG}${MSG}\n" ${@}
+	return 0
+}
+
+printme()
+{
+	local OPTS FUNCTION LOGER
+
+	OPTS="$(getopt -o f:l: -l function:,loger -- "${@}")"
+	eval set -- ${OPTS}
+	while true
+	do
+		case ${1} in
+			-f|--function) FUNCTION="${2}" ;;
+			-l|--loger   ) LOGER="${2}"    ;;
+			--           ) shift; break    ;;
+		esac
+		shift
+	done
+	[ -n "${LOGER}" ] && LOGER="${LOGER} => "
+
+	FUNCTION="${FUNCTION:-log}"	
+	case "${FUNCTION}" in
+		msg|warn|error|die|debug|log) true ;;
+		* ) printf "$(gettext 'Invalid "%s" function')\n" "${FUNCTION}" ;;
+	esac
+	MESSAGE="${1}"
+	shift 1
+
+	case ${MESSAGE} in
+		msg_group_exist   ) ${FUNCTION} "${LOGER}$(gettext '%s group alrready exist')" ${1} ;;
+		msg_user_exist    ) ${FUNCTION} "${LOGER}$(gettext '%s user alrready exist')" ${1} ;;
+		msg_dir_exist     ) ${FUNCTION} "${LOGER}$(gettext '%s directory alrready exist')" ${1} ;;
+		msg_install_dir   ) ${FUNCTION} "${LOGER}$(gettext 'Installing %s directory')" ${1} ;;
+		msg_printing      ) ${FUNCTION} "${LOGER}$(gettext 'Printing %s file')" ${1} ;;
+		msg_no_root_allow ) ${FUNCTION} "${LOGER}$(gettext 'Unable to use / as directory. Are you crazy \?')" ${1} ;;
+		msg_nothing_to_do ) ${FUNCTION} "${LOGER}$(gettext 'Nothing to do here')" ;;
+		msg_no_scripts    ) ${FUNCTION} "${LOGER}$(gettext 'No scripts found. Nothing to do')"   ;;
+		msg_only_as       ) ${FUNCTION} "${LOGER}$(gettext 'This option only can be run as "%s" user')" ${1} ;;
+		msg_fail_scripts  ) ${FUNCTION} "${LOGER}$(gettext 'The next scripts have errors\n%s')" ${@} ;;
+		msg_mis_scripts   ) ${FUNCTION} "${LOGER}$(gettext 'The next scripts are missingc\n%s')" ${@} ;;
+		msg_fail_list     ) ${FUNCTION} "${LOGER}$(gettext 'Retriving script list failed')" ;;
+		msg_fail_sources  ) ${FUNCTION} "${LOGER}$(gettext 'Download sources failed for next scripts\n%s')" ${@} ;;
+		msg_fail_patches  ) ${FUNCTION} "${LOGER}$(gettext 'Download patches failed for next scripts\n%s')" ${@} ;;
+		msg_cleanning_dir ) ${FUNCTION} "${LOGER}$(gettext 'Cleanning %s directory')" ${1} ;;
+		msg_unpacking     ) ${FUNCTION} "${LOGER}$(gettext 'Unpacking %s archive file')" ${1} ;;
+		msg_running_func  ) ${FUNCTION} "${LOGER}$(gettext 'Running %s() function')" ${1//()} ;;
+		msg_exec_phase    ) ${FUNCTION} "${LOGER}$(gettext '%s phase found. Running command')" ${1} ;;
+		msg_file_not_found) ${FUNCTION} "${LOGER}$(gettext '%s file not found')" ${1} ;;
+		*                 ) ${FUNCTION} "${LOGER}${MESSAGE}" ${1} ;;
+	esac
+	
+	return 0
+}

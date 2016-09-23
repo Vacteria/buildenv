@@ -1,0 +1,118 @@
+#!/bin/sh
+
+#
+# Include needed files 
+#
+LIBHOME="/usr/share/buildenv/backend"
+
+. ${LIBHOME}/main
+. ${LIBHOME}/messages
+
+#
+# getopt options and variables
+#
+SELECTOR="Nill"
+CONFMODE="Nill"
+SHORT_OPTS="brCc:gt:"
+LONG_OPTS="build,resume,clean,config:,get,t:"
+GLOBAL_OPTS="$(getopt --options "${SHORT_OPTS}" --longoptions "${LONG_OPTS}" --name "${0}" -- "${@}")"
+[ "$?" != "0" ] && exit >&2
+
+eval set -- ${GLOBAL_OPTS}
+
+while true
+do
+	case ${1} in
+		-b|--build ) SELECTOR="1"    ;;
+		-r|--resume) SELECTOR="2"    ;;
+		-C|--clean ) SELECTOR="3"    ;;
+		-c|--config) SELECTOR="4"    
+		             CONFMODE="${2}" ;;
+		-g|--get   ) SELECTOR="5"    ;;
+		-t|--target) SELECTOR="6"
+					 ACTION="${2}"   ;;
+		-- ) shift ; break           ;;
+	esac
+	shift
+done
+
+INPUT="${@}"
+
+MYSELF="${0##*/}"
+MYUSER="buildenv"
+MYHOME="/home/buildenv"
+if [ -f "${MYHOME}/.buildenvrc" ]
+then
+	. "${MYHOME}/.buildenvrc" || exit 1
+fi
+MYUSER="${BUILD_USER:-${MYUSER}}"
+MYHOME="/home/${MYUSER}"
+
+if [ "${SELECTOR}" == "4" ]
+then
+	case "${CONFMODE}" in
+		host|h|target|t ) true ;;
+		* )
+			error "$(gettext 'Invalid "%s" configuration mode. Only [host|target] is allowed')" "${CONFMODE}"
+			exit 1
+		;;
+	esac
+else
+	MYHOME="$(get_user_home ${MYUSER})"
+	if [ $? != "0" ] 
+	then
+		error "$(gettext '"%s" user not found. Please, use "%s --config host" before')" "${MYUSER}" "${0}"
+		exit 1
+	fi
+fi
+
+if [ "${SELECTOR}" == "6" ]
+then
+	case "${ACTION}" in
+		up|u|down|d) true ;;
+		* )
+			error "$(gettext 'Invalid "%s" configuration mode. Only [up|down] is allowed')" "${ACTION}"
+			exit 1
+		;;
+	esac
+fi
+
+define_paths
+define_compiler
+
+if [ "$(full_path ${MYHOME})" == "/" ]
+then
+	printme -f "die" msg_no_root_allow
+fi
+
+case "${SELECTOR}" in
+	1 )
+		only_as_user
+		. ${LIBHOME}/build || exit 1
+		build_system ${INPUT}
+	;;
+	2 ) 
+		only_as_user
+		. ${LIBHOME}/build || exit 1
+		resume_build 
+	;;
+	3 ) 
+		only_as_user
+		clean_build
+	;;
+	4 )
+		only_as_root
+		. ${LIBHOME}/setup || exit 1
+		setup_build
+	;;
+	5 )
+		only_as_user
+		. ${LIBHOME}/net || exit 1
+		download_sources ${INPUT}
+	;;
+	6 )
+		only_as_root
+		. ${LIBHOME}/setup || exit 1
+		rootfs_action
+	;;
+esac

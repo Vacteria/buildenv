@@ -1,0 +1,391 @@
+#!/bin/bash
+
+SETUP_INCLUDED="${0}"
+
+print_bashrc()
+{
+	printme -f "debug" msg_printing "bashrc"
+	
+	cat > ${MYHOME}/.bashrc <<EOF
+
+set +h
+umask 022
+
+LC_ALL=POSIX
+PATH=${_toolspath}/bin:/bin:/usr/bin
+
+export LC_ALL PATH
+
+EOF
+	
+	chown ${MYUSER}:${MYUSER} ${MYHOME}/.bashrc
+	
+	return 0
+}
+
+print_bash_profile()
+{
+	printme -f "debug" msg_printing "bash_profile"
+
+	cat > ${MYHOME}/.bash_profile <<"EOF"
+exec env -i HOME=${HOME} TERM=${TERM} PS1='\u:\w\$ ' /bin/bash
+EOF
+
+	chown ${MYUSER}:${MYUSER} ${MYHOME}/.bash_profile
+	
+	return 0
+}
+
+print_buildenvrc()
+{
+	if [ ! -f "${MYHOME}/.buildenvrc" ]
+	then
+		printme -f "debug" msg_printing "buildenvrc"
+
+		cat > ${MYHOME}/.buildenvrc << "EOF"
+#
+# general build enviroment configuration file
+#
+
+#
+# Distribution target name
+#
+#BUILD_DISTRO=""
+
+#
+# Scripts directory
+#
+#BUILD_SCRIPTS=""
+
+#
+# Sources directory
+#
+#BUILD_SOURCES=""
+
+#
+# Patches directory
+#
+#BUILD_PATCHES=""
+
+#
+# Temporal directory
+#
+#BUILD_TMP=""
+
+#
+# Log directory
+#
+#BUILD_LOG=""
+
+#
+# Stage directory
+#
+# BUILD_STAGE=""
+#
+
+#
+# Target root directory
+#
+#BUILD_ROOTFS=""
+
+#
+# C target for compiler
+#
+#BUILD_CTARGET=""
+
+EOF
+	fi
+
+	return 0
+}
+
+print_makelinks()
+{
+	cat > ${_rootfs}/usr/bin/makelinks <<EOF
+ln -sf /toolchain/bin/{bash,cat,echo,pwd,stty,getopt} /bin
+ln -sf /toolchain/bin/{wget,gettext} /usr/bin
+ln -sf /toolchain/bin/vpm* /usr/bin
+ln -sf /toolchain/share/vpm /usr/share/vpm
+ln -sf /toolchain/etc/vpm /etc
+ln -sf /toolchain/bin/perl /usr/bin
+ln -sf /toolchain/lib/libgcc_s.so{,.1} /usr/lib
+ln -sf /toolchain/lib/libstdc++.so{,.6} /usr/lib
+sed 's/toolchain/usr/' /toolchain/lib/libstdc++.la > /usr/lib/libstdc++.la
+ln -sf bash /bin/sh
+
+if [[ -L /sbin/ldconfig || ! -r /sbin/ldconfig ]]
+then
+	ln -sf /toolchain/sbin/ldconfig /sbin
+fi
+
+ln -sf /proc/mounts /etc/mtab
+ln -sf /run /var/run
+ln -sf /run/lock /var/lock
+if [ ! -r /var/run/utmp ]
+then
+	touch /var/run/utmp 
+	chgrp utmp /var/run/utmp 
+	chmod 664 /var/run/utmp 
+fi
+
+touch /var/log/{btmp,lastlog,wtmp}
+chgrp utmp /var/log/lastlog
+chmod 664 /var/log/lastlog
+touch /etc/vacteria-release
+chmod 600 /var/log/btmp
+EOF
+
+	chmod 755 ${_rootfs}/usr/bin/makelinks
+	
+	return 0
+}
+
+print_shadow()
+{
+	if [ ! -r ${_rootfs}/sbin/nologin ]
+	then
+		cat > ${_rootfs}/etc/passwd <<EOF
+root:x:0:0:root:/root:/bin/bash
+bin:x:1:1:bin:/dev/null:/bin/false
+nobody:x:99:99:Unprivileged User:/dev/null:/bin/false
+EOF
+
+		cat > ${_rootfs}/etc/group <<EOF
+root:x:0:
+bin:x:1:
+sys:x:2:
+kmem:x:3:
+tty:x:4:
+tape:x:5:
+daemon:x:6:
+floppy:x:7:
+disk:x:8:
+lp:x:9:
+dialout:x:10:
+audio:x:11:
+video:x:12:
+utmp:x:13:
+usb:x:14:
+cdrom:x:15:
+mail:x:16:
+shadow:x:17:
+wheel:x:18:
+uucp:x:19:
+plugdev:x:20:
+netdev:x:21:
+powerdev:x:22:
+nogroup:x:99:
+EOF
+	fi
+	
+	return 0
+}
+
+print_resolv()
+{
+	cat > ${_rootfs}/etc/resolv.conf <<EOF
+nameserver 8.8.8.8
+nameserver 8.8.4.4
+EOF
+
+	return 0
+}
+
+check_directories()
+{
+	local D C DIRS
+	
+	DIRS=(
+		$B_SCRIPTS
+		$B_SOURCES
+		$B_PATCHES
+		$B_TMPDIR
+		$B_LOGDIR
+		$B_ROOTFS
+		$B_STAGE
+	)
+	
+	for D in ${DIRS[*]}
+	do
+		if [ ! -d "${D}" ]
+		then
+			printme -f "debug" msg_install_dir "${D}"
+			install -D -d -m 0755 -o ${MYUSER} -g ${MYUSER} ${D} || return 1
+		else
+			printme -f "debug" msg_dir_exist "${D}"
+			chown -R ${MYUSER}:${MYUSER} ${D} || exit
+		fi
+	done
+	
+	C="$(full_path "${B_ROOTFS}/${B_TOOLSPATH}")"		
+	if [ -d "${C}" ]
+	then
+		printme -f "debug" msg_dir_exist "${C}"
+		chown ${MYUSER}:${MYUSER} "${C}"
+	else
+		printme -f "debug" msg_install_dir "${C}"
+		install -d -o ${MYUSER} -g ${MYUSER} ${C}
+	fi
+	
+	ln -sf ${C} /
+		
+	return 0
+}
+
+setup_host()
+{
+	if ! get_user_group -q "${MYUSER}"
+	then
+		debug "$(gettext 'Creating user group "%s"')" "${MYUSER}"
+		groupadd "${MYUSER}" || exit 1
+	else
+		printme -f "log" msg_group_exist "${MYUSER}"
+	fi
+			
+
+			
+	print_bashrc
+	print_bash_profile
+	print_buildenvrc
+	check_directories
+	
+	if ! get_user_name -q "${MYUSER}"
+	then
+		debug "$(gettext 'Creating user name "%s"')" "${MYUSER}"
+		useradd --create-home --no-user-group --skel /dev/null --shell /bin/bash \
+		--home-dir ${MYHOME} --comment 'Vacteria stage builder user' ${MYUSER} || exit 1
+		gpasswd -a ${MYUSER} ${MYUSER}
+	else
+		printme -f "log" msg_user_exist "${MYUSER}"
+	fi
+	
+	return 0
+}
+
+setup_target()
+{
+	only_as_root
+	
+	local M MOUNTED
+	
+	for M in dev/pts dev/shm dev proc sys 
+	do
+		if mpoint --silent ${_rootfs}/${M}
+		then
+			MOUNTED+="${M}"
+		fi
+	done
+	
+	if [ -n "${MOUNTED}" ]
+	then
+		error "$(gettext 'The next filesystems is mounted. Please umount them before setup chroot')"
+		printf "%s\n" ${MOUNTED}
+		return 1
+	fi
+	
+	if [ -r "${_rootfs}/etc/toolchain" ] 
+	then
+		msg "$(gettext 'This toolchain is allready configured on "%s" date')" "$(cat ${_rootfs}/etc/toolchain)"
+		return 0
+	fi
+	
+	mkdir -p ${_rootfs}/{run,dev,proc,sys,etc,bin,sbin,lib,usr/{bin,sbin,lib,share},var/log}
+	install -d -m 0700 ${_rootfs}/root
+	install -d -m 1777 ${_rootfs}/tmp
+	chown -R root:root ${_rootfs}/*
+	
+	print_makelinks
+	print_shadow
+	print_resolv
+	
+	exec_chroot /usr/bin/makelinks
+	exec_chroot -c "rm -f /usr/bin/makelinks"
+	
+	echo "$(date +%c)" > ${_rootfs}/etc/toolchain
+		
+	return 0
+}
+
+up_chroot()
+{	
+	local DIR
+	
+	msg "$(gettext 'Starting chroot enviroment')"
+	for DIR in proc sys dev
+	do
+		[ -d "${_rootfs}/${DIR}" ] && mkdir -p ${_rootfs}/${DIR} 
+		if ! mpoint --silent ${_rootfs}/${DIR}
+		then
+			case ${DIR} in
+				proc ) CMD="-t proc proc"   ;;
+				sys  ) CMD="-t sysfs sysfs" ;;
+				dev  ) CMD="-o bind /dev"   ;;
+			esac
+			
+			[ -n "${CMD}" ] && mount ${CMD} ${_rootfs}/${DIR} || die "$(gettext 'Failed to mount "/%s"')" "${DIR}"
+		fi
+	done
+	
+	if [ -d "${_rootfs}/toolchain" ]
+	then
+		chroot "${_rootfs}" /toolchain/bin/env -i HOME=/root TERM="$TERM" PS1='\u:\w\$ ' PATH=/bin:/usr/bin:/sbin:/usr/sbin:/toolchain/bin /toolchain/bin/bash +h
+	else
+		chroot "${_rootfs}" env -i HOME=/root TERM="$TERM" PS1='\u:\w\$ ' PATH=/bin:/usr/bin:/sbin:/usr/sbin /bin/bash --login +h
+	fi
+	
+	return 0
+}
+
+down_chroot()
+{
+	local DIR P
+
+	msg "$(gettext 'Stoping chroot enviroment')"
+	for DIR in proc sys dev tmp run var/tmp
+	do
+		if mpoint --silent ${_rootfs}/${DIR}
+		then
+			debug "$(gettext 'Umounting %s directory')" "/${DIR}"
+			if ! umount ${_rootfs}/${DIR} 2>/dev/null
+			then
+				debug "$(gettext 'Trying to Kill any process using "%s"')" "/${DIR}"
+				for P in $(fuser -m ${_rootfs}/${DIR})
+				do
+					echo "kill -TERM ${P} 2>/dev/null"
+				done
+				debug "$(gettext 'Trying to umount "%s" again')" "/${DIR}"
+				umount ${_rootfs}/${DIR} 2>/dev/null || die "$(gettext 'Failed to umount "%s"')" "/${DIR}"
+			fi
+		else
+			debug "$(gettext 'Skiping umounted "%s" directory')" "/${DIR}"
+		fi
+	done
+	
+	return 0
+}
+
+setup_build()
+{
+	case "$(only_lower "${CONFMODE}")" in
+		host|h ) 
+			setup_host
+			return $?
+		;;
+		target|t )
+			setup_target
+			return $?
+		;;
+	esac
+	
+	return 0
+}
+
+rootfs_action()
+{
+	case "$(only_lower "${ACTION}")" in
+		up|u   ) up_chroot   ;;
+		down|d ) down_chroot ;;
+	esac
+	
+	
+}

@@ -1,0 +1,80 @@
+#!/bin/bash
+
+NET_INCLUDED="${0}"
+
+get_sources()
+{
+	local I
+	
+	set -- ${sources}
+	{ cd ${B_SOURCES}
+		for I in ${@}
+		do
+			wget -c ${I} || return 1
+		done
+	}
+	
+	return 0
+}
+
+get_patches()
+{
+	local I
+	
+	set -- ${patches}
+	{ cd ${B_PATCHES}
+		for I in ${@}
+		do
+			wget -c ${I} || return 1
+		done
+	}
+	
+	return 0
+}
+
+download_sources()
+{
+	local INPUT STATUS FAILED_SOURCES FAILED_PATCHES
+		
+	STATUS="0"
+	INPUT="${@:-$(get_script_list)}"
+	[ $? != 0 ] && printme -f "die" msg_fail_list
+	
+	if [ -n "${INPUT}" ]
+	then
+		if ! check_scripts ${INPUT}
+		then
+			[ -n "${_missing_scripts_}" ] && printme -f "error" msg_mis_scripts ${_missing_scripts_}
+			[ -n "${_fail_scripts_}" ] && printme -f "error" msg_fail_scripts ${_failed_scripts_}
+			
+			return 1
+		fi		
+	fi
+	
+	if [[ -z "${INPUT}" || -z "${_success_scripts_}" ]]
+	then
+		printme -f "msg" msg_no_scripts
+		return 0
+	fi
+	
+	for I in ${_success_scripts_}
+	do
+		source_script ${I}
+		get_sources || FAILED_SOURCES+=" ${I##*/}"
+		get_patches || FAILED_PATCHES+=" ${I##*/}"
+	done
+	
+	if [ -n "${FAILED_SOURCES}" ]
+	then
+		printme -f "error" msg_fail_sources "${FAILED_SOURCES}"
+		STATUS="1"
+	fi
+
+	if [ -n "${FAILED_PATCHES}" ]
+	then
+		printme -f "error" msg_fail_patches "${FAILED_PATCHES}"
+		STATUS="1"
+	fi
+	
+	return ${STATUS}
+}

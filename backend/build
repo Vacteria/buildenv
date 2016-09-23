@@ -1,0 +1,287 @@
+#!/bin/bash
+
+BUILD_INCLUDED="${0}"
+
+unpack()
+{
+	_inside_=""
+	local SRCFILE INPUT
+		
+	INPUT="${1}"
+	[ -z "${INPUT}" ] && return 1
+	SRCFILE="${B_SOURCES}/${INPUT##*/}"
+	
+	
+	_inside_=$(tar -C ${B_TMPDIR} -xvf ${SRCFILE} 2>/dev/null | awk -F/ '{print $1}' | uniq)
+	
+	return $?
+}
+
+extract()
+{
+	_inside_=""
+	local SRCFILE INPUT
+		
+	INPUT="${1}"
+	[ -z "${INPUT}" ] && return 1
+	SRCFILE="${B_SOURCES}/${INPUT##*/}"
+	
+	
+	_inside_=$(tar -xvf ${SRCFILE} 2>/dev/null | awk -F/ '{print $1}' | uniq)
+	
+	return $?
+}
+
+apply_patch()
+{
+	[ -z "${1}" ] && return 1
+	
+	if ! patch --quiet --batch --forward --strip=0 --input=${1} 
+	then
+		for N in $(seq 1 30)
+		do
+			if patch --quiet --batch --forward --strip=${N} --input=${1}
+			then
+				return 0
+			fi
+		done
+	else
+		return 0
+	fi
+	
+	return 1
+}
+
+print_macros()
+{
+	msg "$(gettext ' ### Path macros')"
+	cat <<EOF 
+	
+Root file system     : ${_rootfs}
+Auxiliar files       : ${_filespath}
+Sources directory    : ${_sourcedir}
+Patches directory    : ${_patchdir}
+Logs directory       : ${_logdir}
+Temporal directory   : ${_tmpdir}
+Temporal tools       : ${_toolspath}
+Stages dir           : ${_stagedir}
+Large OS bits        : ${_bits}
+
+EOF
+
+	msg "$(gettext ' ### Compiler settings')"
+	cat <<EOF
+Multilib system       : ${_multilib}
+Compiler target       : ${_ctarget}
+Lib directory         : ${_libdir}
+Tools lib             : ${_toolslib}
+Tools bin             : ${_toolsbin}
+Tools headers         : ${_toolsinclude}
+Build distribuion     : ${_distro}
+Machinne type         : ${_uname}
+
+EOF
+
+return 0
+}
+
+process_scripts()
+{
+	local I LOGFILE INPUT P S
+	
+	INPUT="${@}"
+	
+	for I in ${INPUT}
+	do
+		source_script ${I}
+		LOGFILE="${B_LOGDIR}/${I//.sh/.log}"
+
+		echo '# %STARTING BUILD' > ${LOGFILE}
+		
+		if [ -n "${exclusive}" ]
+		then
+			case ${_bits} in
+				32 )
+					case ${exclusive} in
+						multilib|x86_64 )
+							echo 'Unable to build %s on %sbits arch' "${I##*/}" "32" 2>&1 | tee -a ${LOGFILE}
+							echo '# %FINISH BUILD' >> ${LOGFILE}
+							continue
+						;;
+					esac
+				;;
+				64 )
+					case ${exclusive} in
+						pentium*|i?86 )
+							echo 'Unable to build %s on %sbits arch' "${I##*/}" "64" 2>&1 | tee -a ${LOGFILE}
+							echo '# %FINISH BUILD' >> ${LOGFILE}
+							continue
+						;;
+					esac
+				;;
+			esac
+		fi
+							
+		if get_command -q pkg_hook
+		then
+			pkg_hook 2>&1 | tee -a ${LOGFILE}
+			if [ "${PIPESTATUS[0]}" == "0" ]
+			then
+				echo '# %FINISH BUILD' >> ${LOGFILE}
+				continue
+			else
+				exit 1
+			fi
+		fi
+
+		clean_tmpdir 2>&1 | tee -a ${LOGFILE}
+		[ "${PIPESTATUS[0]}" != "0" ] && exit 1
+		SOURCES=(${sources})
+		_mainsrc="${SOURCES[0]}"
+		_lastsrc=(${SOURCES[@]:1})
+		
+		if [ ! -f ${_sourcedir}/${_mainsrc##*/} ]
+		then
+			printme -f "die" msg_file_not_found ${_mainsrc##*/}
+			return 1
+		fi
+		
+		if get_command -q pkg_pre_unpack
+		then
+			pkg_pre_unpack 2>&1 | tee -a ${LOGFILE}
+			[ "${PIPESTATUS[0]}" != "0" ] && exit 1
+		fi
+		
+		printme -f "msg" msg_unpacking ${_mainsrc##*/} 2>&1 | tee -a ${LOGFILE}
+		unpack ${_mainsrc}
+		if [ -z "${_inside_}" ]
+		then
+			die "$(gettext 'Unable to get work directory')" 2>&1 | tee -a ${LOGFILE}
+			return 1
+		else
+			_wrkdir="${_tmpdir}/${_inside_}"
+			pushd ${_wrkdir} || return 1
+			for P in ${patches}
+			do
+				if [ -f "${_patchdir}/${P##*/}" ]
+				then
+					msg "$(gettext 'Runing %s patch')" "${P##*/}"
+					if ! apply_patch "${_patchdir}/${P##*/}"
+					then
+						die "$(gettext 'Unable to apply %s patch')" "${P##*/}"
+					fi
+				else
+					die "$(gettext '%s patch not found')" "${P##*/}"
+				fi
+			done
+		fi
+		
+		if get_command -q pkg_pre_compile
+		then
+			printme -f "msg" msg_exec_phase "pkg_pre_compile" 2>&1 | tee -a ${LOGFILE}
+			pkg_pre_compile
+			[ "${?}" != "0" ] && exit 1
+		fi
+
+		print_macros           2>&1 | tee -a ${LOGFILE}		
+		command -V pkg_compile 2>&1 | tee -a ${LOGFILE} 
+		pkg_compile 2>&1 | tee -a ${LOGFILE}
+		[ "${PIPESTATUS[0]}" != "0" ] && exit 1
+		
+		if get_command -q pkg_post_compile
+		then
+			printme -f "msg" msg_exec_phase "pkg_post_compile"
+			pkg_post_compile 2>&1 | tee -a ${LOGFILE}
+			[ "${PIPESTATUS[0]}" != "0" ] && exit 1
+		fi
+
+		popd
+		rm -rvf ${_wrkdir}		
+		echo '# %FINISH BUILD' 2>&1 | tee -a ${LOGFILE}
+	done
+	
+	return 0	
+}
+
+build_system()
+{	
+	local INPUT	SOURCES I
+	
+	INPUT="${@:-$(get_script_list)}"
+	[ $? != 0 ] && printme -f "die" msg_fail_list
+
+	if [ -n "$(find ${B_LOGDIR} -mindepth 1 -type f -name "*.log")" ]
+	then
+		warn "$(gettext 'Found another incomplete build process. Please better use %s')" "--resume"
+		return 0
+	fi
+	
+	if [ -n "${INPUT}" ]
+	then
+		if ! check_scripts ${INPUT}
+		then
+			[ -n "${_missing_scripts_}" ] && printme -f "error" msg_mis_scripts ${_missing_scripts_}
+			[ -n "${_fail_scripts_}" ] && printme -f "error" msg_fail_scripts ${_failed_scripts_}
+			
+			return 1
+		fi		
+	fi
+	
+	if [[ -z "${INPUT}" || -z "${_success_scripts_}" ]]
+	then
+		printme -f "msg" msg_no_scripts
+		return 0
+	fi
+	
+	process_scripts ${_success_scripts_}
+	
+	return 0
+}
+
+stop()
+{
+	exit 1 ; exit 1
+}
+
+resume_build()
+{
+	local LOGS INDEX LOG FILE RESUME REP I
+	
+	LIST=$(ls -1 ${B_LOGDIR}/ | grep -E "^[[:digit:]].+\.log" | sort -n)
+	
+	if [ -z "${LIST}" ]
+	then
+		die "$(gettext 'Nothing to resume. Please, use %s')" "--build"
+	fi
+	
+	
+	LOGS=(${LIST})
+	INDEX="$((${#LOGS[@]} -1))"
+
+	for I in $(seq 0 ${INDEX} | tac)
+	do
+		LOG="${B_LOGDIR}/${LOGS[${I}]}"
+		FILE="${LOGS[${I}]//.log/.sh}"
+		
+		if [ -n "$(grep -E '^# %FINISH BUILD' ${LOG})" ]
+		then
+			RESUME="$(ls -1 ${B_SCRIPTS}/ | grep -E "^[[:digit:]].+\.sh" | sort -n | sed -e '/^'${FILE}'/,/^$/!d' -e '/'${FILE}'/d')"
+			REP="${LOGS[$((${I}+1))]//.log/.sh}"
+			break
+		else
+			rm -f ${LOG}
+		fi
+	done	
+
+	if [ -n "${RESUME}" ]
+	then
+		msg "$(gettext 'Resuming build from "%s"')" "${REP}"
+		clean_tmpdir
+		process_scripts ${RESUME} || exit 1
+	else
+		die "$(gettext 'This compilation cant be resumed. Please, use %s')" "--build"
+	fi
+	
+	return 0
+	
+}
